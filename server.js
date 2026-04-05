@@ -4,6 +4,7 @@ const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 dotenv.config();
 
@@ -223,6 +224,62 @@ const writeJSONFile = (filename, data) => {
   const filepath = getDataFilePath(filename);
   try {
     fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
+    
+    // Auto-backup to GitHub via API (no git required)
+    if (process.env.GITHUB_TOKEN) {
+      try {
+        const content = Buffer.from(JSON.stringify(data, null, 2)).toString('base64');
+        const https = require('https');
+        
+        const options = {
+          hostname: 'api.github.com',
+          path: `/repos/Dalerjonc/slsgroup-data/contents/${filename}`,
+          method: 'PUT',
+          headers: {
+            'Authorization': `token ${process.env.GITHUB_TOKEN}`,
+            'User-Agent': 'SLS-Backend',
+            'Content-Type': 'application/json'
+          }
+        };
+        
+        // Get current file SHA first
+        const getOptions = {
+          ...options,
+          method: 'GET'
+        };
+        
+        https.get(getOptions, (getRes) => {
+          let sha = '';
+          if (getRes.statusCode === 200) {
+            let body = '';
+            getRes.on('data', chunk => body += chunk);
+            getRes.on('end', () => {
+              try {
+                sha = JSON.parse(body).sha;
+              } catch (e) {}
+              
+              // Now update the file
+              const req = https.request(options, (res) => {
+                if (res.statusCode === 200 || res.statusCode === 201) {
+                  console.log(`✓ ${filename} backed up to GitHub`);
+                }
+              });
+              
+              req.write(JSON.stringify({
+                message: `Auto-save ${filename}`,
+                content: content,
+                sha: sha || undefined
+              }));
+              req.end();
+            });
+          }
+        }).on('error', () => {});
+        
+      } catch (gitError) {
+        console.log(`⚠ GitHub backup skipped for ${filename}`);
+      }
+    }
+    
     return true;
   } catch (error) {
     console.error(`Error writing ${filename}:`, error);
